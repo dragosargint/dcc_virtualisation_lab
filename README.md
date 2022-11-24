@@ -119,7 +119,7 @@ To kill the vm you can `CTRL+C` where you run `./run_qemu_single_vm` or, from an
 pkill qemu
 ```
 
-# TODO: Add a network device to the VM
+# Add a network device to the VM
 So far we managed to start a VM and connect to it through the serial console.
 Let's add a network device to it.
 For the guest part, we will use an e1000 device, that is a network card that uses the e1000 driver.
