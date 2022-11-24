@@ -197,8 +197,54 @@ From the host run:
 ```
 curl 10.0.0.10:8000
 ```
+After you run the experiment you can kill the VM like in the previous chapter.
+We should also delete the tap interface that we created
+```
+ip link delete tap0
+```
 
-# TODO: Test e1000 driver vs virtio (add some scripts)
+# Virtualized Vs Paravirtualized I/O
+So far we have added several devices to our virtual machine.
+In chapter 1 we added a block device for storage and a char device for the serial console.
+In chapter 2 we added a network device:`e1000`. This emulates an Intel NIC,  which uses the `e1000` driver.
+The block device from chapter 1 `virtio-blk-pci` is of virtio type, which means it is a paravirtualized device.
+What does that mean?
+The `e1000` driver is an example of fully virtualized device, which means emulating existing hardware devices.
+The `e1000` driver does not know it is running in a VM so it expects it has an Intel NIC below.
+And the NIC must be emulated.
+The paravirtualized drivers know they are running in a Virtual machine and they don't require emultating the hardware.
+They are much smarter abstraction layers and they allow the VM to simply skip most of the steps related to emulating and controlling the virtual hardware.
+The paravirtualized drivers offer better performance at the cost of modifying the Guest operating system.
+
+To see the difference of performance between virtualized and paravirtualized I/O we will create two virtual machines.
+Each virtual machine will have 2 network interfaces, one will be an `e1000` emulated device, and the other one will be a `virtio` device.
+We will connect this 2 VMs with 2 Linux bridges and we will use iperf to test the 2 modes of virtualization.
+
+![virt_vs_para](./images/virt_vs_para.png)
+
+We already know how to setup the `e1000` device in the guest and it's asociated tap backend.
+Let's see how we can add a virtio network device in the guest.
+The qemu parameter should look as follows:
+```
+-device virtio-net-pci,netdev=hostnet1,id=net1,mac=52:54:00:8b:99:df -netdev tap,ifname=tap1,id=hostnet1 \
+```
+So it looks almost the same, the difference is the actual device, which is a paravirtualized one this time.
+Now it's time to start our two VMs. We will use the `runqemu_two_vms.sh`.
+Have a look at what this script is doing.
+It creates the 4 taps listed in the image above and 2 bridges.
+It adds the taps to the bridges.
+It also assigns an ip address on the bridge (although it is not really necessary in the experiment).
+And then sets some qemu arguments and starts the VMs.
+Go ahead and run the script
+```
+./runqemu_two_vms.sh
+```
+Connect to their serial consoles using the unix sockets and assing the ip addresse listed in the image above.
+You might want to look at the mack because e1000 doesn't necessarly have to be eth0.
+Connect to their serial consoles using the UNIX sockets and asssign the IP address listed in the image above.
+You might want to look at the mac address to tell which one is the e1000 and which one is the virtio.
+After seting the ip addresses run an iperf through the e1000 link and aftwerwards through the virtio link.
+Draw some conclusions from the output.
 
 # TODO: GDB into the VM to see some intersting stuff (what's intersting to see?)
 

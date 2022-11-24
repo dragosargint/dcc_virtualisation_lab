@@ -13,14 +13,3 @@ if [[ ! -f simple_alpine_rootfs1.ext4 ]]; then
 fi
 
 # TODO: Add qemu command here
-qemu-system-x86_64 \
-        -nodefaults \
-        -nographic \
-        -enable-kvm \
-        -cpu host \
-        -m 256M \
-        -kernel "alpine-bzImage" \
-        -device virtio-blk-pci,drive=id0 -blockdev file,node-name=id0,filename=simple_alpine_rootfs1.ext4 \
-        -device isa-serial,chardev=serial0 -chardev socket,id=serial0,path=serial.socket,server,nowait \
-        -device e1000,netdev=hostnet0,id=net0,mac=52:54:00:8b:99:de -netdev tap,ifname=tap0,id=hostnet0 \
-        -append "root=/dev/vda loglevel=15 console=hvc0"
