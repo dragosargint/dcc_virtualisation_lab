@@ -1,6 +1,11 @@
 # Virtualization
 ## Introduction
+This lab will be presented from a lower level perspective.
 In this lab we will use QEMU and KVM to build virtual machines.
+From the beginning it should be mentioned that there are all kinds of tools that abstract the operations we will do with qemu.
+These can be libvirt or virtmanager.
+But what is important to remember is that in the end it all comes down to qemu and kvm.
+And although in production no one will create a virtual machine by writing thousands of arguments for qemu, it is useful to understand certain basic aspects related to virtualization.
 QEMU is a userland type 2 (i.e runs upon a host OS) hypervisor for performing hardware virtualization, allowing code written for a given processor to be executed on another (i.e ARM on x86, or PPC on ARM).
 Though QEMU can run on its own and emulate all of the virtual machine’s resources, as all the emulation is performed in software it is extremely slow.
 KVM is a Linux kernel module.
@@ -17,8 +22,19 @@ Therefore the instructions meant for the vCPU can be directly executed on the ph
 ```
 git clone https://github.com/dragosargint/dcc_virtualisation_lab.git
 ```
-2. Navigate into the cloned repo and download the following [filesystem](https://drive.google.com/file/d/1VcHDw1JEH-u3soOEJye1DxHCJgMbC-6c/view?usp=share_link)
-3. TODO: Install deps
+2. Navigate into the cloned repo and download the following [filesystem](https://drive.google.com/drive/u/0/folders/1PqBOCx8IYmYaW6X46S6dB_lqeWRNMIJe)
+3. Install the following deps:
+```
+sudo apt install qemu-system-x86
+sudo apt install socat
+sudo apt install bridge-utils
+sudo apt install linux-tools-`uname -r`
+
+```
+4. Make sure KVM is supported
+```
+ls /dev/kvm
+```
 
 ## Build a simple QEMU + KVM Virtual Machine
 Let's see what we need to build a virtual machine.
@@ -222,7 +238,7 @@ We will connect this 2 VMs with 2 Linux bridges and we will use iperf to test th
 
 ![virt_vs_para](./images/virt_vs_para.png)
 
-We already know how to setup the `e1000` device in the guest and it's asociated tap backend.
+We already know how to setup the `e1000` device in the guest and its asociated tap backend.
 Let's see how we can add a virtio network device in the guest.
 The qemu parameter should look as follows:
 ```
@@ -246,11 +262,116 @@ You might want to look at the mac address to tell which one is the e1000 and whi
 After seting the ip addresses run an iperf through the e1000 link and aftwerwards through the virtio link.
 Draw some conclusions from the output.
 
-# TODO: GDB into the VM to see some intersting stuff (what's intersting to see?)
+# KVM
+KVM (for Kernel-based Virtual Machine) is a full virtualization solution for Linux on x86 hardware.
+KVM is the hypervisor of our virtual machine.
+From the perspective of the real OS what we are actually starting with qemu is just an User Space process.
+To allocate resources the qemu process must communicate with the KVM module.
+This communication is achieved through `ioctl()` syscalls.
+For example, when we specify the `-m 256M` argument in qemu, the qemu process will issue an `ioctl()` syscall to allocate 256 of Virtual memory, which from the guest's perspective is physical memory.
+So `ioctl()` is a way of direct communication between the qemu process (that encapsulate the guest) and the KVM module.
+There is also an indirect communication between the guest and the KVM module.
+This type of operation is called a `VM Exit`.
+The name is very suggestive, it means that the VM stops the execution for the moment, and lets the hypervisor(i.e. KVM) do its job.
+You might wonder when such a thing can happen.
+The short answer is when the guest kernel tries to do a privileged operation.
+We will see more later, but first have a look at a nice diagram.
 
-# TODO: UNIKRAFT VMs
+![kvm](./images/kvm.png)
 
+Firstly, let's see some `ioctl()` syscalls.
+We will use `strace` for this and we will only record `ioctl()` syscalls.
+```
+strace -e trace=ioctl \
+qemu-system-x86_64 \
+        -nodefaults \
+        -nographic \
+        -enable-kvm \
+        -cpu host \
+        -m 256M \
+        -kernel "alpine-bzImage" \
+        -device virtio-blk-pci,drive=id0 -blockdev file,node-name=id0,filename=simple_alpine_rootfs1.ext4 \
+        -device isa-serial,chardev=serial0 -chardev socket,id=serial0,path=serial.socket,server,nowait \
+        -device e1000,netdev=hostnet0,id=net0,mac=52:54:00:8b:99:de -netdev tap,ifname=tap0,id=hostnet0 \
+        -append "root=/dev/vda loglevel=15 console=hvc0" \
+        &> strace.log
+```
+To make it easier we redirected the output in the `strace.log` file.
+You can stop the VM if you want and let's look in the `strace.log` file
+Look for `KVM_SET_USER_MEMORY_REGION` and see if you can find something that looks like 256MB.
+We just saw an `ioctl()` in action.
+
+Now let's try to see a `VM Exit`, or maybe more...
+In the source code of KVM there is something that looks like this:
+```
+/*
+ * The exit handlers return 1 if the exit was handled fully and guest execution
+ * may resume.  Otherwise they set the kvm_run parameter to indicate what needs
+ * to be done to userspace and return 0.
+ */
+static int (*kvm_vmx_exit_handlers[])(struct kvm_vcpu *vcpu) = {
+        [EXIT_REASON_EXCEPTION_NMI]           = handle_exception_nmi,
+        [EXIT_REASON_EXTERNAL_INTERRUPT]      = handle_external_interrupt,
+        [EXIT_REASON_TRIPLE_FAULT]            = handle_triple_fault,
+        [EXIT_REASON_NMI_WINDOW]              = handle_nmi_window,
+        [EXIT_REASON_IO_INSTRUCTION]          = handle_io,
+        [EXIT_REASON_CR_ACCESS]               = handle_cr,
+        [EXIT_REASON_DR_ACCESS]               = handle_dr,
+        [EXIT_REASON_CPUID]                   = kvm_emulate_cpuid,
+        ...
+```
+This is an array of function pointers.
+So for a different privileged operation that is executed by the guest a different function will be called.
+We will try to trigger some VM Exits of type `EXIT_REASON_CR_ACCESS`.
+This can mean for example that the guest os tried to access the `cr3` register, the page table register,
+and it was not allowed to. We will measure the number of VM Exits using perf.
+But first, to run this experiment we need to disable EPT (extended page tables) and we want to use shadow page tables.
+A good explanation on what each of these are you can find [here](https://stackoverflow.com/questions/60694243/how-does-kvm-qemu-and-guest-os-handles-page-fault).
+
+To disable EPT from kvm we need to use the following commands as the root user
+
+```
+rmmod kvm-intel
+modprobe kvm-intel ept=0
+```
+Check if EPT is disabled with
+```
+cat /sys/module/kvm_intel/parameters/ept # shuld print N
+```
+Now we will need 3 terminals
+In the first run the VM from chapter1 using the `runqemu_single_vm.sh`
+In the second connect to the serial console:
+```
+sudo ./connect_to_socket.sh serial.socket
+```
+And in the third start a perf on kvm:
+```
+sudo perf kvm stats live
+```
+Back to our guest console, in the /root directory should be a script with a while true.
+We want to start many processes of this types so that we get a lot of context switches and a lot of changes in the `cr3` register (as the page table will be changed for each process).
+You can start 3 of them in the background
+```
+./while_true &
+./while_true &
+./while_true &
+```
+
+Now if you look at the perf output you should see some VM Exits related to CR accesses.
+![cr_access](./images/cr_access.png)
+
+After that you can stop everything.
+And don't forget to re-enable your EPT for the KVM module:
+```
+rmmod kvm-intel
+modprobe kvm-intel
+```
+Check if it is enabled using:
+```
+cat /sys/module/kvm_intel/parameters/ept # should be Y
+```
 
 ## References
 https://www.packetcoders.io/what-is-the-difference-between-qemu-and-kvm/
 https://archive.fosdem.org/2018/schedule/event/vai_qemu_jungle/attachments/slides/2539/export/events/attachments/vai_qemu_jungle/slides/2539/qemu_cli_jungle.pdf
+https://www.linux-kvm.org/page/Memory
